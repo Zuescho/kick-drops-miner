@@ -18,7 +18,31 @@ the desktop app runs inside [`jlesage/baseimage-gui`](https://github.com/jlesage
 
 ## Quick start
 
-### docker compose (recommended)
+### Pull the prebuilt image (GHCR)
+
+GitHub Actions builds and publishes the image on every push to `main`:
+
+```bash
+docker pull ghcr.io/zuescho/kickdropsminer:latest
+```
+
+> **Note:** new GHCR packages are **private** by default. Either make the package public
+> (GitHub → your profile → Packages → `kickdropsminer` → Package settings → Change visibility),
+> or `docker login ghcr.io` with a PAT that has `read:packages` before pulling on your server.
+
+Run it:
+
+```bash
+docker run -d \
+  --name kickdropsminer \
+  -p 5800:5800 \
+  -v /path/to/config:/config \
+  -e USER_ID=1000 -e GROUP_ID=1000 -e TZ=Europe/Berlin \
+  --shm-size=1g --restart unless-stopped \
+  ghcr.io/zuescho/kickdropsminer:latest
+```
+
+### docker compose (build locally)
 
 ```bash
 git clone <this-repo> kickdropsminer
