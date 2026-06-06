@@ -21,8 +21,13 @@ ENV APP_NAME="Kick Drops Miner" \
     DISPLAY_HEIGHT=900
 
 # Runtime deps: Chromium + matched driver, Python + Tk, fonts.
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# The base image enables apt Recommends, which drags in systemd/udev/upower —
+# systemd's postinst then fails in-container (mkdir /var/log). Force Recommends
+# AND Suggests off so only hard deps install (chromium needs only libudev1).
+RUN printf 'APT::Install-Recommends "false";\nAPT::Install-Suggests "false";\n' \
+        > /etc/apt/apt.conf.d/99-no-recommends && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
         chromium \
         chromium-driver \
         python3 \
