@@ -212,14 +212,12 @@ def make_chrome_driver(
     opts.add_argument("--log-level=3")
     opts.add_argument("--silent")
 
-    # When running inside a container (no GPU; headful under Xvfb), the GPU
-    # process can crash the page and surface as a generic Selenium "unknown
-    # error" even though Chrome started. Disable GPU on every launch path
-    # (the headless path already does this above).
+    # When running inside a container (no GPU; headful under Xvfb), disable the
+    # GPU so Chrome falls back to SwiftShader software rendering. Do NOT also
+    # pass --disable-software-rasterizer: with both, Chrome has no renderer at
+    # all and dies on startup ("cannot connect to chrome ... not reachable").
     if os.environ.get("KDM_CONTAINER"):
         opts.add_argument("--disable-gpu")
-        opts.add_argument("--disable-software-rasterizer")
-        opts.add_argument("--disable-features=VizDisplayCompositor")
 
     user_data_dir = CHROME_DATA_DIR
     os.makedirs(user_data_dir, exist_ok=True)
