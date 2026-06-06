@@ -212,6 +212,15 @@ def make_chrome_driver(
     opts.add_argument("--log-level=3")
     opts.add_argument("--silent")
 
+    # When running inside a container (no GPU; headful under Xvfb), the GPU
+    # process can crash the page and surface as a generic Selenium "unknown
+    # error" even though Chrome started. Disable GPU on every launch path
+    # (the headless path already does this above).
+    if os.environ.get("KDM_CONTAINER"):
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--disable-software-rasterizer")
+        opts.add_argument("--disable-features=VizDisplayCompositor")
+
     user_data_dir = CHROME_DATA_DIR
     os.makedirs(user_data_dir, exist_ok=True)
     opts.add_argument(f"--user-data-dir={user_data_dir}")

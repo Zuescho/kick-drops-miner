@@ -21,6 +21,10 @@ ENV APP_NAME="Kick Drops Miner" \
     # Points at a world-writable copy because undetected-chromedriver patches
     # the driver binary in place, which the non-root app user can't do to /usr/bin.
     KDM_CHROMEDRIVER_PATH=/usr/local/bin/chromedriver \
+    # Tell the app it runs in a container (enables GPU-disable Chrome flags).
+    KDM_CONTAINER=1 \
+    # Stream Python stdout/stderr to the container log (shows real tracebacks).
+    PYTHONUNBUFFERED=1 \
     PATH=/opt/venv/bin:$PATH \
     # Larger default desktop so the GUI + a Chromium window fit comfortably.
     DISPLAY_WIDTH=1600 \
