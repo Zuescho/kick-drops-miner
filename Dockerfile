@@ -18,7 +18,9 @@ ENV APP_NAME="Kick Drops Miner" \
     # Persist config.json, cookies/ and chrome_data/ on the mounted volume.
     KDM_DATA_DIR=/config \
     # Use the matched musl chromedriver shipped below (no runtime download).
-    KDM_CHROMEDRIVER_PATH=/usr/bin/chromedriver \
+    # Points at a world-writable copy because undetected-chromedriver patches
+    # the driver binary in place, which the non-root app user can't do to /usr/bin.
+    KDM_CHROMEDRIVER_PATH=/usr/local/bin/chromedriver \
     PATH=/opt/venv/bin:$PATH \
     # Larger default desktop so the GUI + a Chromium window fit comfortably.
     DISPLAY_WIDTH=1600 \
@@ -37,7 +39,11 @@ RUN add-pkg \
         harfbuzz \
         ttf-freefont \
         font-dejavu \
-        tzdata
+        tzdata && \
+    # undetected-chromedriver patches the driver binary in place, so it must be
+    # writable by the non-root app user — give it a world-writable copy.
+    cp /usr/bin/chromedriver /usr/local/bin/chromedriver && \
+    chmod 0777 /usr/local/bin/chromedriver
 
 # Python dependencies in a venv (system site-packages so apt-provided tkinter /
 # Pillow are importable). Build deps are added temporarily for any wheels that
