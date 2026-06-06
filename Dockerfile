@@ -30,7 +30,7 @@ RUN add-pkg \
         chromium-chromedriver \
         python3 \
         py3-pip \
-        py3-tkinter \
+        python3-tkinter \
         py3-pillow \
         nss \
         freetype \
