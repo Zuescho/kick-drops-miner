@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>KickDropsMiner</Name>
+  <Repository>kickdropsminer:local</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/HyperBeats/KickDropsMiner</Support>
+  <Project>https://github.com/HyperBeats/KickDropsMiner</Project>
+  <Overview>AFK-mine Kick.com drops in a container. The desktop GUI is served over the web (noVNC) on port 5800 — no VNC client needed. Drives a real Chromium browser via Selenium/undetected-chromedriver. Replace the Repository with your published image (e.g. youruser/kickdropsminer:latest).</Overview>
+  <Category>Tools: MediaApp:Other</Category>
+  <WebUI>http://[IP]:[PORT:5800]/</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/HyperBeats/KickDropsMiner/main/assets/logo.png</Icon>
+  <ExtraParams>--shm-size=1g</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>Dockerized KickDropsMiner with a noVNC web GUI. Mine Kick drops on Unraid. Config, cookies and the Chromium profile persist in /config.</Description>
+  <Networking>
+    <Mode>bridge</Mode>
+    <Publish>
+      <Port>
+        <HostPort>5800</HostPort>
+        <ContainerPort>5800</ContainerPort>
+        <Protocol>tcp</Protocol>
+      </Port>
+    </Publish>
+  </Networking>
+  <Data>
+    <Volume>
+      <HostDir>/mnt/user/appdata/kickdropsminer</HostDir>
+      <ContainerDir>/config</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+  </Data>
+  <Environment>
+    <Variable>
+      <Value>1000</Value>
+      <Name>USER_ID</Name>
+      <Mode/>
+    </Variable>
+    <Variable>
+      <Value>1000</Value>
+      <Name>GROUP_ID</Name>
+      <Mode/>
+    </Variable>
+    <Variable>
+      <Value>Europe/Berlin</Value>
+      <Name>TZ</Name>
+      <Mode/>
+    </Variable>
+  </Environment>
+  <Labels/>
+  <Config Name="Web UI" Target="5800" Default="5800" Mode="tcp" Description="noVNC web interface" Type="Port" Display="always" Required="true" Mask="false">5800</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/kickdropsminer" Mode="rw" Description="config.json, cookies, chrome profile" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/kickdropsminer</Config>
+  <Config Name="USER_ID" Target="USER_ID" Default="1000" Mode="" Description="uid owning /config" Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
+  <Config Name="GROUP_ID" Target="GROUP_ID" Default="1000" Mode="" Description="gid for permissions" Type="Variable" Display="advanced" Required="false" Mask="false">1000</Config>
+  <Config Name="TZ" Target="TZ" Default="Europe/Berlin" Mode="" Description="Timezone" Type="Variable" Display="advanced" Required="false" Mask="false">Europe/Berlin</Config>
+</Container>

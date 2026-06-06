@@ -1,0 +1,22 @@
+services:
+  kickdropsminer:
+    build: .
+    image: kickdropsminer:local
+    container_name: kickdropsminer
+    ports:
+      - "5800:5800"   # noVNC web UI -> http://<host>:5800
+      # - "5900:5900" # raw VNC (optional)
+    volumes:
+      - ./config:/config
+    environment:
+      - USER_ID=1000        # uid that owns ./config on the host
+      - GROUP_ID=1000
+      - TZ=Europe/Berlin
+      # - DISPLAY_WIDTH=1600
+      # - DISPLAY_HEIGHT=900
+      # - DARK_MODE=1
+      # To password-protect / TLS the web UI, see the jlesage baseimage-gui env
+      # docs: https://github.com/jlesage/docker-baseimage-gui#environment-variables
+    # Chromium needs a reasonable amount of shared memory.
+    shm_size: "1gb"
+    restart: unless-stopped

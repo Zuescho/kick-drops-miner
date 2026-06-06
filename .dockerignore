@@ -1,0 +1,11 @@
+# Build context excludes
+.git
+.gitignore
+config/
+**/__pycache__/
+**/*.pyc
+*.md
+docker-compose.yml
+unraid/
+chromedriver-win64/
+run.bat

@@ -1,15 +1,18 @@
-# Ignore lo*cal app data
-cookies/*
-chrome_data/*
-utils/chrome_data/
-utils/cookies/
-config.json*
-config.json
+# Runtime data (mounted volume)
+config/
+
+# Python
 __pycache__/
-dist/
-build/
-*.spec
-example_response.json
-/useful data
-progressapi_exampleresult.json
-streamerinfo_example.json
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Windows chromedriver binary (dropped from this fork; regenerated locally if needed)
+chromedriver-win64/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

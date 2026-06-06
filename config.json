@@ -2,7 +2,7 @@
   "items": [],
   "chromedriver_path": "",
   "extension_path": "",
-  "mute": false,
+  "mute": true,
   "hide_player": false,
   "mini_player": false,
   "force_160p": false,

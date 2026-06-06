@@ -27,6 +27,13 @@ def _resolve_app_dir():
 
 def _resolve_data_dir(resource_dir):
     """Writable directory used for config, cookies and persistent Chrome data."""
+    # Allow overriding the data location via env (used by the Docker image to
+    # point config/cookies/chrome_data at a mounted volume, e.g. /config).
+    env_dir = os.environ.get("KDM_DATA_DIR")
+    if env_dir:
+        os.makedirs(env_dir, exist_ok=True)
+        return env_dir
+
     data_dir = resource_dir
     if getattr(sys, "frozen", False):
         # Store alongside the executable for a fully portable setup

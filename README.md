@@ -4,6 +4,11 @@
 
 # Kick Drop Miner
 
+> 🐳 **Running on a server / Unraid?** This fork adds a Docker build that serves the GUI
+> over your browser (noVNC, port 5800). See **[README.docker.md](README.docker.md)** and the
+> Unraid template in [`unraid/`](unraid/). The image is built automatically by GitHub Actions
+> and published to GHCR.
+
 Kick Drop Miner automates watching Kick.com streams so you can keep drop timers moving without babysitting the site. The desktop app ships with a CustomTkinter UI, Selenium + undetected-chromedriver under the hood, persistent local storage, and smart handling for live/offline transitions.
 
 ## Highlights

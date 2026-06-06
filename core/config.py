@@ -9,7 +9,8 @@ class Config:
     
     def __init__(self):
         self.items = []
-        self.chromedriver_path = None
+        # Default to a system driver path provided via env (Docker image); None on desktop.
+        self.chromedriver_path = os.environ.get("KDM_CHROMEDRIVER_PATH")
         self.extension_path = None
         self.mute = True
         self.hide_player = False
@@ -43,6 +44,10 @@ class Config:
                 if "tried_channels" not in item:
                     item["tried_channels"] = []
             self.chromedriver_path = data.get("chromedriver_path")
+            # Fall back to a system-provided driver (set by the Docker image) so
+            # the bundled Chromium/driver pair is used offline without a download.
+            if not self.chromedriver_path:
+                self.chromedriver_path = os.environ.get("KDM_CHROMEDRIVER_PATH")
             self.extension_path = data.get("extension_path")
             self.mute = data.get("mute", True)
             self.hide_player = data.get("hide_player", False)
