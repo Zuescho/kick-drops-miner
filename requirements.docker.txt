@@ -1,0 +1,10 @@
+# Python deps installed into the image's venv via pip.
+# Pillow and tkinter come from Alpine packages (py3-pillow, py3-tkinter), so they
+# are NOT listed here. browser_cookie3 (desktop-only cookie import) is omitted —
+# it's optional and pulls heavy C extensions that are useless in a container.
+customtkinter
+selenium
+undetected-chromedriver
+webdriver-manager
+setuptools
+packaging
