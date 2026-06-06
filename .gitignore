@@ -1,6 +1,13 @@
 # Runtime data (mounted volume)
 config/
 
+# Secrets — never commit session cookies
+cookies.txt
+cookies.json
+kick.com.json
+*.cookies
+cookies/
+
 # Python
 __pycache__/
 *.py[cod]
