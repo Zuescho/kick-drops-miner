@@ -9,6 +9,9 @@ from .scheduler import Scheduler
 
 
 def main() -> int:
+    # Configure logging FIRST so even config-load lines honor the level and the
+    # noisy-library quieting is in effect before any driver work.
+    configure_logging()
     cfg = MinerConfig.load()
     configure_logging(cfg.log_level)
     log = get_logger("miner")

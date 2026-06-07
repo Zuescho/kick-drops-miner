@@ -219,8 +219,21 @@ class Browser:
             opts.add_argument("--disable-gpu")
 
         opts.add_argument(f"--user-data-dir={self._user_data_dir}")
+        # Cap the on-disk media/HTTP cache so a multi-day run can't grow the
+        # profile without bound.
+        opts.add_argument("--disk-cache-size=104857600")  # 100 MB
 
         chrome_major, chrome_executable = _detect_chrome()
+        if chrome_major is None and (self._container or os.environ.get("KDM_CONTAINER")):
+            # With a supplied driver_executable_path uc won't download, but a
+            # missing version can still trigger a noisy patch/retry — surface it.
+            if self._log:
+                self._log.warning(
+                    "could not detect Chrome major version; relying on the "
+                    "supplied chromedriver (set KDM_CHROME_VERSION if needed)")
+            env_major = _parse_major_version(os.environ.get("KDM_CHROME_VERSION", ""))
+            if env_major:
+                chrome_major = env_major
         driver_kwargs = {"options": opts, "version_main": chrome_major}
         if chrome_executable:
             driver_kwargs["browser_executable_path"] = chrome_executable
@@ -263,8 +276,18 @@ class Browser:
             # Probe — touching these raises if the session is gone, and the
             # tiny script round-trips the *renderer*, catching an "Aw, Snap"
             # crashed tab that still answers current_url from the browser proc.
+            # Bound the script call so a wedged renderer can't stall callers.
             _ = self._driver.current_url
-            if self._driver.execute_script("return 1;") != 1:
+            try:
+                self._driver.set_script_timeout(5)
+            except Exception:
+                pass
+            ok = self._driver.execute_script("return 1;") == 1
+            try:
+                self._driver.set_script_timeout(self.SCRIPT_TIMEOUT)
+            except Exception:
+                pass
+            if not ok:
                 raise RuntimeError("renderer probe returned unexpected value")
             return
         except Exception as exc:
@@ -370,6 +393,13 @@ class Browser:
             if self._log:
                 self._log.debug("fetch_json transport error for %s: %s", url, exc)
             return None
+        finally:
+            # Restore the default script timeout (don't leak the per-fetch one
+            # onto later execute_script/ensure_alive probes).
+            try:
+                self._driver.set_script_timeout(self.SCRIPT_TIMEOUT)
+            except Exception:
+                pass
 
         if not text or not isinstance(text, str):
             return None
@@ -424,6 +454,19 @@ class Browser:
                 c = dict(c)
                 if c.get("expiry") is None:
                     c.pop("expiry", None)
+                # Selenium/Chrome only accept sameSite Strict/Lax/None; a value
+                # exported from another tool (e.g. "no_restriction"/"unspecified")
+                # makes add_cookie reject the WHOLE cookie — which could be the
+                # session_token. Normalize, or drop the field entirely.
+                same = c.get("sameSite")
+                if same is not None:
+                    mapped = {"no_restriction": "None", "unspecified": None,
+                              "lax": "Lax", "strict": "Strict", "none": "None"}
+                    norm = mapped.get(str(same).lower(), same)
+                    if norm in ("Strict", "Lax", "None"):
+                        c["sameSite"] = norm
+                    else:
+                        c.pop("sameSite", None)
                 self._driver.add_cookie(c)
             except Exception:
                 pass

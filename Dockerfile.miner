@@ -37,7 +37,16 @@ RUN apt-get update && \
         fonts-liberation \
         tini \
         ca-certificates \
-        tzdata && \
+        tzdata \
+        # Explicit GL/GBM/NSS/ALSA libs so Chromium has a software renderer and
+        # doesn't die with "page crash" / "no renderer" under --no-install-recommends.
+        libgl1 \
+        libegl1 \
+        libgbm1 \
+        libnss3 \
+        libasound2 \
+        libxkbcommon0 \
+        libxshmfence1 && \
     rm -rf /var/lib/apt/lists/* && \
     # undetected-chromedriver patches the driver in place -> needs a writable copy.
     cp "$(command -v chromedriver)" /usr/local/bin/chromedriver && \

@@ -30,6 +30,15 @@ def configure_logging(level: str | None = None) -> None:
         for h in root.handlers:
             h.setLevel(lvl)
 
+    # Quiet chatty plumbing: undetected_chromedriver/selenium talk to chromedriver
+    # over urllib3, which logs WARNING "Retrying ... Read timed out" spam on every
+    # slow command. A genuinely dead driver is already surfaced by the Browser's
+    # own WARNING, so keep these at ERROR (set KDM_QUIET_LIBS=0 to opt out).
+    if str(os.environ.get("KDM_QUIET_LIBS", "1")).lower() not in ("0", "false", "no"):
+        for noisy in ("urllib3", "urllib3.connectionpool", "selenium",
+                      "undetected_chromedriver", "websockets"):
+            logging.getLogger(noisy).setLevel(logging.ERROR)
+
 
 def get_logger(name: str) -> logging.Logger:
     """Return a logger; ensure logging is configured at least once."""

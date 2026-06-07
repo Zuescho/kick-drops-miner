@@ -149,24 +149,29 @@ class Scheduler:
             live = self.browser.get_cookies() if self.browser else []
         except Exception:
             live = []
-        bearer = session_bearer(live) or session_bearer(
+        live_bearer = session_bearer(live)
+        new_bearer = live_bearer or session_bearer(
             load_cookies(self.config.cookies_dir))
-        changed = bearer != self.bearer
-        self.bearer = bearer
-        if bearer:
+        if new_bearer:
+            changed = new_bearer != self.bearer
+            self.bearer = new_bearer
             if initial:
                 self.log.info("authenticated session bearer present")
             elif changed:
                 self.log.info("session bearer refreshed")
+            # Persist ONLY when the live jar actually carries the token, so a
+            # transient session-less read can't overwrite a good seed file.
+            if live_bearer and (initial or changed):
+                try:
+                    save_cookies(self.browser, self.config.cookies_dir)
+                except Exception as e:
+                    self.log.debug("save_cookies failed: %s", e)
         else:
-            self.log.warning(
-                "no session_token -> drops endpoints anonymous; re-seed %s",
-                self.config.cookies_dir)
-        if live and (initial or changed):
-            try:
-                save_cookies(self.browser, self.config.cookies_dir)
-            except Exception as e:
-                self.log.debug("save_cookies failed: %s", e)
+            # Don't null a previously-good bearer on a transient empty read.
+            if initial or self.bearer is None:
+                self.log.warning(
+                    "no session_token -> drops endpoints anonymous; re-seed %s",
+                    self.config.cookies_dir)
 
     def _log_progress(self) -> None:
         """Periodically log drops progress so the operator can SEE drops are
@@ -182,16 +187,29 @@ class Scheduler:
         except Exception:
             rows = []
         if not rows:
-            self.log.info("drops progress: none reported "
-                          "(no active campaign progress, or bearer stale)")
+            why = "" if self.bearer else " (no bearer — anonymous)"
+            self.log.info("drops progress: none reported%s", why)
             return
+        # Progress rows are keyed by campaign id and carry NO name; join to the
+        # campaigns list for a readable label and pull the nearest reward target.
+        camps = {c.get("id"): c for c in (self._cached_campaigns() or [])
+                 if isinstance(c, dict) and c.get("id")}
         for row in rows[:8]:
             if not isinstance(row, dict):
                 continue
-            name = row.get("name") or row.get("id")
-            units = row.get("progress_units") or row.get("progress") or 0
+            cid = row.get("id")
+            name = (camps.get(cid) or {}).get("name") or cid
+            units = row.get("progress_units", 0)          # already in minutes
             status = row.get("status", "?")
-            self.log.info("drops progress: %s -> %s (%s)", name, units, status)
+            reqs = [r.get("required_units") for r in (row.get("rewards") or [])
+                    if isinstance(r, dict) and not r.get("claimed")
+                    and r.get("required_units")]
+            target = min(reqs) if reqs else None
+            if target:
+                self.log.info("drops progress: %s -> %s/%s min (%s)",
+                              name, units, target, status)
+            else:
+                self.log.info("drops progress: %s -> %s min (%s)", name, units, status)
 
     def _make_on_tick(self, slug, stop_event):
         """Build the watch heartbeat callback. Logs liveness every
@@ -213,15 +231,25 @@ class Scheduler:
 
     # --- queue construction ---
     def _build_queue(self) -> list[_Item]:
-        items: list[_Item] = []
-        for ch in self.config.channels:
-            items.append(_Item(channel=ch, category_id=ch.category_id))
-
+        raw: list[_Item] = [
+            _Item(channel=ch, category_id=ch.category_id)
+            for ch in self.config.channels
+        ]
         if self.config.auto_campaigns:
             try:
-                items.extend(self._campaign_items())
+                raw.extend(self._campaign_items())
             except Exception as e:
                 self.log.warning("auto_campaigns failed: %s", e)
+
+        # Dedup by channel slug (a configured channel and a campaign pick can
+        # collide; duplicates just waste rotation).
+        seen, items = set(), []
+        for it in raw:
+            key = channel_slug_from_url(it.channel.url) or it.channel.url
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(it)
         return items
 
     def _cached_campaigns(self) -> list:
@@ -280,35 +308,57 @@ class Scheduler:
     # --- per-item processing ---
     def _process_item(self, item: _Item, stop_event) -> None:
         ch = item.channel
-        try:
-            self.browser.maybe_recycle(self.config.driver_recycle_hours * 3600)
-            self.browser.ensure_alive()
-        except Exception as e:
-            self.log.warning("ensure_alive failed before %s: %s", ch.url, e)
-
         target_seconds = max(0, int(ch.minutes) * 60)
         slug = channel_slug_from_url(ch.url) or ch.url
         self.log.info(
-            "watching %s for %s",
-            slug,
+            "watching %s for %s", slug,
             "indefinitely" if target_seconds <= 0 else f"{ch.minutes}m",
         )
 
-        result = self._watch(ch.url, target_seconds, item.category_id, stop_event, slug)
-        if result is None:
-            return
+        # Slice long / indefinite watches so the driver can be recycled between
+        # slices (caps renderer-memory growth over a multi-day single watch).
+        recycle_h = self.config.driver_recycle_hours
+        recycle_s = int(recycle_h * 3600) if recycle_h and recycle_h > 0 else 0
+        remaining = target_seconds
+        total = 0
 
-        reason = result.reason
-        self.log.info(
-            "%s -> %s (%ds watched)", slug, reason, result.watched_seconds
-        )
-        self._note_result(ch.url, result, slug)
+        while not self._stopping(stop_event):
+            try:
+                self.browser.maybe_recycle(recycle_s)
+                self.browser.ensure_alive()
+            except Exception as e:
+                self.log.warning("ensure_alive failed before %s: %s", ch.url, e)
 
-        if reason == watcher.STOPPED:
-            return
-        if reason == watcher.OFFLINE:
-            self._handle_offline(item, stop_event)
-        # COMPLETED / WRONG_CATEGORY / ERROR -> advance (caller loops on)
+            if recycle_s <= 0:
+                slice_target = target_seconds          # slicing disabled
+            elif target_seconds <= 0:
+                slice_target = recycle_s               # indefinite -> fixed slice
+            else:
+                slice_target = min(remaining, recycle_s)
+
+            result = self._watch(ch.url, slice_target, item.category_id, stop_event, slug)
+            if result is None:
+                return
+            total += result.watched_seconds
+            self._note_result(ch.url, result, slug)
+            reason = result.reason
+
+            if reason == watcher.COMPLETED:
+                if target_seconds <= 0:
+                    continue                            # slice done; recycle + go on
+                remaining -= result.watched_seconds
+                if remaining > 0:
+                    continue                            # more to watch; recycle between
+                self.log.info("%s -> completed (%ds watched)", slug, total)
+                return
+
+            # Non-completed slice ends this item.
+            self.log.info("%s -> %s (%ds watched)", slug, reason, total)
+            if reason == watcher.STOPPED:
+                return
+            if reason == watcher.OFFLINE:
+                self._handle_offline(item, stop_event)
+            return  # WRONG_CATEGORY / ERROR -> advance (caller loops on)
 
     def _note_result(self, url, result, slug) -> None:
         """Mark the cycle productive if any time was watched, and escalate a
