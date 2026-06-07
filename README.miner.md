@@ -64,10 +64,14 @@ logged and defaults are used.
   "headless": false,
   "force_160p": true,
   "mute": true,
-  "offline_grace_checks": 2,
+  "offline_grace_checks": 4,
   "loop_forever": true,
   "poll_offline_seconds": 60,
-  "auto_campaigns": false
+  "auto_campaigns": false,
+  "driver_recycle_hours": 6,
+  "heartbeat_seconds": 300,
+  "campaign_minutes": 0,
+  "progress_log": true
 }
 ```
 
@@ -77,12 +81,24 @@ logged and defaults are used.
 | `headless` | bool | `false` | `false` = headful Chrome under Xvfb (most robust vs. Cloudflare). |
 | `force_160p` | bool | `true` | Force lowest stream quality (160p) to save bandwidth/CPU. |
 | `mute` | bool | `true` | Keep the `<video>` muted. |
-| `offline_grace_checks` | int | `2` | Consecutive offline checks before a channel is considered offline. |
+| `offline_grace_checks` | int | `4` | Consecutive offline checks before a channel is abandoned (~1 min grace, so a BRB blip isn't dropped). |
 | `loop_forever` | bool | `true` | After the queue drains, start over. |
-| `poll_offline_seconds` | int | `60` | When a channel is offline and no live alternative exists, wait this long. |
+| `poll_offline_seconds` | int | `60` | When a channel is offline and no live alternative exists, wait this long (idle cycles back off exponentially). |
 | `auto_campaigns` | bool | `false` | Also enqueue a live channel from each active drop campaign. |
+| `campaign_minutes` | int | `0` | Rotation slice for auto-campaign channels (`0` = use `KDM_DEFAULT_MINUTES`) so one 24/7 streamer can't pin the queue. |
+| `driver_recycle_hours` | num | `6` | Proactively recycle Chrome past this age to cap renderer-memory growth over long runs. |
+| `heartbeat_seconds` | int | `300` | Log a `still watching …` line (and refresh session/progress) on this cadence during a long watch. |
+| `progress_log` | bool | `true` | Periodically log drops progress so you can confirm drops are actually crediting. |
 
 A bare-string channel entry uses `KDM_DEFAULT_MINUTES` (default `120`).
+
+### Long-run robustness (what the engine does over multi-day campaigns)
+
+- **No silent hangs** — every page load / in-page fetch is bounded (45s / ~30s); a stuck navigation is aborted instead of freezing for minutes. A dead *or* crashed-renderer tab is detected and the browser recreated.
+- **Honest watch time** — live seconds are accrued only while the stream is confirmed live within the last 90s, so an API/Cloudflare blackout pauses the clock instead of banking fake time.
+- **Player watchdog** — if `video.currentTime` stops advancing, the player is re-played and, if still stuck, the channel page is reloaded (160p re-applied).
+- **Session self-heal** — cookies/bearer are re-read from the live browser every 30 min and persisted, so a rotated `session_token` survives and a restart keeps working.
+- **Rate-limit aware** — a `429/403/Cloudflare` response is distinguished from a real "offline" answer, and polling backs off instead of hammering.
 
 ### Environment variables
 

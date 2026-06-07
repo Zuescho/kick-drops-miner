@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +152,13 @@ class Browser:
 
     KICK_URL = "https://kick.com"
 
+    # Bound every page-load / async-script so a hung navigation returns instead
+    # of blocking forever (the selenium HTTP client to chromedriver would
+    # otherwise read-timeout at 120s and *retry the navigation*). Page-load
+    # timeout must be comfortably under that client timeout.
+    PAGE_LOAD_TIMEOUT = 45
+    SCRIPT_TIMEOUT = 30
+
     def __init__(self, *, headless, chromedriver_path, user_data_dir,
                  container, log):
         self._headless = bool(headless)
@@ -159,6 +167,8 @@ class Browser:
         self._container = bool(container)
         self._log = log
         self._driver = None
+        self._created_at = 0.0          # monotonic time the driver was built
+        self._last_blocked = False      # last fetch_json hit 429/403/Cloudflare
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -219,7 +229,15 @@ class Browser:
         if drv_path and os.path.isfile(drv_path):
             driver_kwargs["driver_executable_path"] = drv_path
 
-        return uc.Chrome(**driver_kwargs)
+        drv = uc.Chrome(**driver_kwargs)
+        # Finite timeouts so a stalled load/script can never wedge the loop.
+        try:
+            drv.set_page_load_timeout(self.PAGE_LOAD_TIMEOUT)
+            drv.set_script_timeout(self.SCRIPT_TIMEOUT)
+        except Exception:
+            pass
+        self._created_at = time.monotonic()
+        return drv
 
     def start(self):
         """Create the driver and navigate to https://kick.com (so in-page
@@ -235,20 +253,27 @@ class Browser:
                 self._log.warning("Initial navigation to kick.com failed: %s", exc)
 
     def ensure_alive(self):
-        """If the driver is dead/unreachable, quit() and recreate it, then
-        re-navigate to kick.com. Callers may invoke before important
+        """If the driver is dead/unreachable/crashed, quit() and recreate it,
+        then re-navigate to kick.com. Callers may invoke before important
         operations."""
         if self._driver is None:
             self.start()
             return
         try:
-            # Probe — touching these properties raises if the driver is gone.
+            # Probe — touching these raises if the session is gone, and the
+            # tiny script round-trips the *renderer*, catching an "Aw, Snap"
+            # crashed tab that still answers current_url from the browser proc.
             _ = self._driver.current_url
-            _ = self._driver.title
+            if self._driver.execute_script("return 1;") != 1:
+                raise RuntimeError("renderer probe returned unexpected value")
             return
         except Exception as exc:
             if self._log:
                 self._log.warning("Driver unreachable (%s); recreating.", exc)
+        self._recreate()
+
+    def _recreate(self):
+        """Tear down and rebuild the driver, landing back on kick.com."""
         self.quit()
         self._driver = self._build_driver()
         try:
@@ -257,42 +282,90 @@ class Browser:
             if self._log:
                 self._log.warning("Re-navigation to kick.com failed: %s", exc)
 
+    def maybe_recycle(self, max_age_seconds):
+        """Proactively recycle the driver once it exceeds max_age_seconds. This
+        is the most reliable defense against cumulative renderer-memory / leaked
+        DOM growth over a multi-day run. No-op if max_age_seconds <= 0."""
+        if max_age_seconds and max_age_seconds > 0 and self._driver is not None:
+            age = time.monotonic() - (self._created_at or 0.0)
+            if age >= max_age_seconds:
+                if self._log:
+                    self._log.info("recycling browser after %ds uptime", int(age))
+                self._recreate()
+
     def get(self, url):
-        """Navigate the single tab. Calls ensure_alive() first."""
+        """Navigate the single tab. Calls ensure_alive() first. On a page-load
+        timeout, stop the partial load and continue (the page is usually still
+        usable) rather than treating it as fatal."""
         self.ensure_alive()
         try:
             self._driver.get(url)
         except Exception as exc:
+            name = type(exc).__name__
             if self._log:
-                self._log.warning("Navigation to %s failed: %s", url, exc)
+                self._log.warning("Navigation to %s failed (%s)", url, name)
+            # Abort the stuck load so the tab is responsive again.
+            try:
+                self._driver.execute_script("window.stop();")
+            except Exception:
+                pass
 
     # -- in-page fetch -----------------------------------------------------
+
+    # Markers that mean Cloudflare/WAF returned an HTML challenge, not JSON.
+    _CLOUDFLARE_MARKERS = (
+        "just a moment",
+        "cf-chl",
+        "attention required",
+        "blocked by security policy",
+        "/cdn-cgi/challenge",
+    )
+
+    @property
+    def last_blocked(self):
+        """True if the most recent fetch_json hit a 429/403/503 or a Cloudflare
+        challenge (vs. a genuine answer). Callers use this to back off."""
+        return self._last_blocked
 
     def fetch_json(self, url, *, bearer=None, timeout=12.0):
         """Run an in-page ``fetch(url, {credentials:'include'})`` from the
         current page origin (must be kick.com), optionally with
-        ``Authorization: Bearer``. Returns parsed JSON dict, or None on network
-        error / non-JSON / blocked. Uses execute_async_script. Never raises."""
+        ``Authorization: Bearer``. Returns the parsed JSON dict, or None on
+        network error / non-JSON / rate-limit / Cloudflare block. Sets
+        ``last_blocked`` so a 429/403/503/challenge is distinguishable from a
+        real "channel offline" answer. Uses execute_async_script. Never raises."""
         import json
 
+        self._last_blocked = False
         self.ensure_alive()
+        # Capture BOTH the HTTP status and the body so a 429/403 JSON error body
+        # can't be mistaken for valid data, and an AbortController bounds the
+        # request so a hung fetch is actively cancelled (not leaked).
         script = """
         const cb = arguments[arguments.length - 1];
         const url = arguments[0];
         const bearer = arguments[1];
+        const ms = arguments[2];
         const headers = { 'Accept': 'application/json' };
         if (bearer) { headers['Authorization'] = 'Bearer ' + bearer; }
-        fetch(url, { method: 'GET', credentials: 'include', cache: 'no-store', headers: headers })
-          .then(r => r.text())
-          .then(t => cb(t))
-          .catch(e => cb(JSON.stringify({ __fetch_error: String(e) })));
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), ms);
+        fetch(url, { method: 'GET', credentials: 'include', cache: 'no-store',
+                     headers: headers, signal: ctrl.signal })
+          .then(r => r.text().then(t => { clearTimeout(timer);
+                 cb(JSON.stringify({ __status: r.status, __body: t })); }))
+          .catch(e => { clearTimeout(timer);
+                 cb(JSON.stringify({ __fetch_error: String(e) })); });
         """
         try:
             try:
-                self._driver.set_script_timeout(timeout)
+                self._driver.set_script_timeout(timeout + 2)
             except Exception:
                 pass
-            text = self._driver.execute_async_script(script, url, bearer)
+            # Tell the in-page fetch to self-abort slightly before selenium would.
+            text = self._driver.execute_async_script(
+                script, url, bearer, int(timeout * 1000)
+            )
         except Exception as exc:
             if self._log:
                 self._log.debug("fetch_json transport error for %s: %s", url, exc)
@@ -300,28 +373,33 @@ class Browser:
 
         if not text or not isinstance(text, str):
             return None
-        low = text.lower()
-        if "blocked by security policy" in low:
-            if self._log:
-                self._log.debug("fetch_json blocked for %s", url)
-            return None
         try:
-            data = json.loads(text)
+            envelope = json.loads(text)
         except Exception:
-            if self._log:
-                self._log.debug("fetch_json non-JSON for %s: %s", url, text[:200])
             return None
-        if isinstance(data, dict) and (data.get("__fetch_error") or data.get("error")):
+        if not isinstance(envelope, dict):
+            return None
+        if envelope.get("__fetch_error"):
             if self._log:
                 self._log.debug(
-                    "fetch_json error payload for %s: %s",
-                    url,
-                    data.get("__fetch_error") or data.get("error"),
+                    "fetch_json transport error for %s: %s", url, envelope["__fetch_error"]
                 )
-            # An "error" key from the API itself may still be a valid dict; but a
-            # transport __fetch_error means no data.
-            if data.get("__fetch_error"):
-                return None
+            return None
+
+        status = envelope.get("__status")
+        body = envelope.get("__body") or ""
+        low = body.lower()
+        if status in (401, 403, 429, 503) or any(m in low for m in self._CLOUDFLARE_MARKERS):
+            self._last_blocked = True
+            if self._log:
+                self._log.debug("fetch_json blocked (status=%s) for %s", status, url)
+            return None
+        try:
+            data = json.loads(body)
+        except Exception:
+            if self._log:
+                self._log.debug("fetch_json non-JSON for %s: %s", url, body[:200])
+            return None
         return data if isinstance(data, dict) else None
 
     # -- raw script bridges ------------------------------------------------

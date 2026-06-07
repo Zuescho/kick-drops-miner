@@ -69,12 +69,19 @@ def apply_cookies(browser, cookies_dir: str, domain: str = "kick.com") -> bool:
 
 
 def session_bearer(cookies: list[dict]) -> str | None:
-    """Return the 'session_token' cookie value (drops Bearer) or None."""
+    """Return the 'session_token' cookie value (drops Bearer) or None. Prefers a
+    kick.com-domain cookie if several share the name."""
+    fallback = None
     for c in cookies or []:
         try:
-            if c.get("name") == "session_token":
-                val = c.get("value")
-                return val or None
+            if c.get("name") != "session_token":
+                continue
         except AttributeError:
             continue
-    return None
+        val = c.get("value")
+        if not val:
+            continue
+        if "kick.com" in str(c.get("domain", "")):
+            return val
+        fallback = fallback or val
+    return fallback

@@ -7,8 +7,11 @@
   "headless": false,
   "force_160p": true,
   "mute": true,
-  "offline_grace_checks": 2,
+  "offline_grace_checks": 4,
   "loop_forever": true,
   "poll_offline_seconds": 60,
-  "auto_campaigns": false
+  "auto_campaigns": false,
+  "driver_recycle_hours": 6,
+  "heartbeat_seconds": 300,
+  "progress_log": true
 }

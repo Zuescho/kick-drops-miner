@@ -89,6 +89,23 @@ class KickClient:
                 return None
         return None
 
+    def required_category_present(self, channel, required_id):
+        """Whether ``required_id`` is among the channel's CURRENT live
+        categories. True/False when known; None if unknown, offline, or the
+        category list is momentarily empty (a transition we must not penalize).
+        Checks ALL categories, not just the first."""
+        data = self.channel_info(channel)
+        if data is None:
+            return None
+        livestream = data.get("livestream")
+        if not (livestream and livestream.get("is_live")):
+            return None
+        categories = livestream.get("categories") or []
+        ids = {c.get("id") for c in categories if isinstance(c, dict)}
+        if not ids:
+            return None
+        return required_id in ids
+
     # -- drops campaigns / progress ---------------------------------------
 
     def fetch_campaigns(self, bearer=None):

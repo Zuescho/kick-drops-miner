@@ -37,6 +37,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _as_int(value, default: int) -> int:
+    """Coerce a JSON scalar to int without ever raising (load() must not crash
+    on a malformed config.json — that would be a boot crash-loop)."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        log.warning("invalid int %r in config.json; using %d", value, default)
+        return default
+
+
 @dataclass
 class Channel:
     url: str
@@ -53,11 +65,17 @@ class MinerConfig:
     container: bool = False
     force_160p: bool = True
     mute: bool = True
-    offline_grace_checks: int = 2
+    offline_grace_checks: int = 4      # ~1min grace so a BRB blip isn't abandoned
     loop_forever: bool = True          # after finishing the queue, start over
     poll_offline_seconds: int = 60     # offline & no live alt -> wait this long
     auto_campaigns: bool = False       # also enqueue live channels from campaigns
     log_level: str = "INFO"
+    default_minutes: int = 120         # per-channel target when unspecified
+    campaign_minutes: int = 0          # rotation slice for auto-campaign items
+                                       # (0 => fall back to default_minutes)
+    driver_recycle_hours: float = 6.0  # proactively recycle Chrome past this age
+    heartbeat_seconds: int = 300       # log "still watching" every N seconds
+    progress_log: bool = True          # periodically log drops progress
 
     @property
     def cookies_dir(self) -> str:
@@ -80,6 +98,7 @@ class MinerConfig:
         cfg.chromedriver_path = os.environ.get("KDM_CHROMEDRIVER_PATH")
 
         default_minutes = _env_int("KDM_DEFAULT_MINUTES", 120)
+        cfg.default_minutes = default_minutes
 
         # --- JSON file overlay ---
         data: dict = {}
@@ -99,14 +118,27 @@ class MinerConfig:
         cfg.headless = bool(data.get("headless", cfg.headless))
         cfg.force_160p = bool(data.get("force_160p", cfg.force_160p))
         cfg.mute = bool(data.get("mute", cfg.mute))
-        cfg.offline_grace_checks = int(
-            data.get("offline_grace_checks", cfg.offline_grace_checks)
+        cfg.offline_grace_checks = _as_int(
+            data.get("offline_grace_checks"), cfg.offline_grace_checks
         )
         cfg.loop_forever = bool(data.get("loop_forever", cfg.loop_forever))
-        cfg.poll_offline_seconds = int(
-            data.get("poll_offline_seconds", cfg.poll_offline_seconds)
+        cfg.poll_offline_seconds = _as_int(
+            data.get("poll_offline_seconds"), cfg.poll_offline_seconds
         )
         cfg.auto_campaigns = bool(data.get("auto_campaigns", cfg.auto_campaigns))
+        cfg.campaign_minutes = _as_int(
+            data.get("campaign_minutes"), cfg.campaign_minutes
+        )
+        cfg.heartbeat_seconds = _as_int(
+            data.get("heartbeat_seconds"), cfg.heartbeat_seconds
+        )
+        cfg.progress_log = bool(data.get("progress_log", cfg.progress_log))
+        try:
+            cfg.driver_recycle_hours = float(
+                data.get("driver_recycle_hours", cfg.driver_recycle_hours)
+            )
+        except (ValueError, TypeError):
+            log.warning("invalid driver_recycle_hours; using %s", cfg.driver_recycle_hours)
         if data.get("chromedriver_path"):
             cfg.chromedriver_path = data.get("chromedriver_path")
 

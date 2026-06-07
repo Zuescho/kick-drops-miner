@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .auth import apply_cookies, load_cookies, session_bearer
+from .auth import apply_cookies, load_cookies, save_cookies, session_bearer
 from .browser import Browser
 from .kick import KickClient, channel_slug_from_url
 from .config import Channel, MinerConfig
@@ -14,6 +14,11 @@ from . import watcher
 from .watcher import watch_channel
 
 KICK_HOME = "https://kick.com"
+
+_CAMPAIGNS_TTL = 300.0      # cache campaigns this long (avoid hammering the API)
+_SESSION_TTL = 1800.0       # re-read cookies / bearer every 30 min
+_PROGRESS_TTL = 1800.0      # log drops progress every 30 min
+_BACKOFF_CAP = 600.0        # max idle-cycle sleep
 
 
 @dataclass
@@ -32,6 +37,14 @@ class Scheduler:
         self.browser: Browser | None = None
         self.kick: KickClient | None = None
         self.bearer: str | None = None
+        # long-run state
+        self._campaigns_cache: list | None = None
+        self._campaigns_at = 0.0
+        self._last_session_refresh = 0.0
+        self._last_progress_log = 0.0
+        self._error_counts: dict[str, int] = {}
+        self._idle_cycles = 0
+        self._cycle_productive = False
 
     def stop(self) -> None:
         """Set the internal stop flag (also honored via the stop_event arg)."""
@@ -64,16 +77,21 @@ class Scheduler:
                     cfg.cookies_dir,
                 )
 
-            self.bearer = session_bearer(load_cookies(cfg.cookies_dir))
-            if self.bearer:
-                self.log.info("authenticated session bearer present")
-            else:
-                self.log.warning("no session_token cookie -> no drops bearer")
-
             self.kick = KickClient(self.browser, self.log)
+            # Prefer the LIVE browser cookie jar (reflects any silent re-auth)
+            # and persist it so a restart survives a rotated token.
+            self._refresh_session(stop_event, initial=True)
 
             # Main loop: build queue, drain it, optionally repeat.
             while not self._stopping(stop_event):
+                self._refresh_session(stop_event)          # honors _SESSION_TTL
+                self._log_progress()                       # honors _PROGRESS_TTL
+                # Recycle Chrome between cycles to cap renderer-memory growth.
+                try:
+                    self.browser.maybe_recycle(cfg.driver_recycle_hours * 3600)
+                except Exception as e:
+                    self.log.debug("maybe_recycle failed: %s", e)
+
                 queue = self._build_queue()
                 if not queue:
                     self.log.warning(
@@ -85,6 +103,7 @@ class Scheduler:
                     continue
 
                 self.log.info("queue has %d channel(s)", len(queue))
+                self._cycle_productive = False
                 for item in queue:
                     if self._stopping(stop_event):
                         break
@@ -95,6 +114,19 @@ class Scheduler:
                 if not cfg.loop_forever:
                     self.log.info("queue drained; loop_forever disabled -> exiting")
                     break
+                # If a whole cycle did no productive watching (everything offline),
+                # back off exponentially instead of re-enumerating every 60s.
+                if not self._cycle_productive:
+                    self._idle_cycles += 1
+                    backoff = min(
+                        cfg.poll_offline_seconds * (2 ** min(self._idle_cycles, 4)),
+                        _BACKOFF_CAP,
+                    )
+                    self.log.info("idle cycle %d; sleeping %ds before rebuild",
+                                  self._idle_cycles, int(backoff))
+                    self._sleep(backoff, stop_event)
+                else:
+                    self._idle_cycles = 0
         except Exception as e:
             self.log.exception("scheduler crashed: %s", e)
         finally:
@@ -103,6 +135,81 @@ class Scheduler:
             except Exception:
                 pass
             self.log.info("scheduler stopped")
+
+    # --- session / progress maintenance (also called mid-watch via on_tick) ---
+    def _refresh_session(self, stop_event, *, initial=False) -> None:
+        """Re-read cookies from the LIVE browser, recompute the drops bearer, and
+        persist them if changed so a restart survives a rotated session_token.
+        Throttled to _SESSION_TTL unless initial. Never raises."""
+        now = time.monotonic()
+        if not initial and now - self._last_session_refresh < _SESSION_TTL:
+            return
+        self._last_session_refresh = now
+        try:
+            live = self.browser.get_cookies() if self.browser else []
+        except Exception:
+            live = []
+        bearer = session_bearer(live) or session_bearer(
+            load_cookies(self.config.cookies_dir))
+        changed = bearer != self.bearer
+        self.bearer = bearer
+        if bearer:
+            if initial:
+                self.log.info("authenticated session bearer present")
+            elif changed:
+                self.log.info("session bearer refreshed")
+        else:
+            self.log.warning(
+                "no session_token -> drops endpoints anonymous; re-seed %s",
+                self.config.cookies_dir)
+        if live and (initial or changed):
+            try:
+                save_cookies(self.browser, self.config.cookies_dir)
+            except Exception as e:
+                self.log.debug("save_cookies failed: %s", e)
+
+    def _log_progress(self) -> None:
+        """Periodically log drops progress so the operator can SEE drops are
+        crediting (and catch a stale bearer). Throttled to _PROGRESS_TTL."""
+        if not self.config.progress_log or not self.kick:
+            return
+        now = time.monotonic()
+        if now - self._last_progress_log < _PROGRESS_TTL:
+            return
+        self._last_progress_log = now
+        try:
+            rows = self.kick.fetch_progress(self.bearer)
+        except Exception:
+            rows = []
+        if not rows:
+            self.log.info("drops progress: none reported "
+                          "(no active campaign progress, or bearer stale)")
+            return
+        for row in rows[:8]:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("name") or row.get("id")
+            units = row.get("progress_units") or row.get("progress") or 0
+            status = row.get("status", "?")
+            self.log.info("drops progress: %s -> %s (%s)", name, units, status)
+
+    def _make_on_tick(self, slug, stop_event):
+        """Build the watch heartbeat callback. Logs liveness every
+        heartbeat_seconds and runs session/progress maintenance on their TTLs so
+        a multi-hour indefinite watch is neither silent nor session-stale."""
+        state = {"beat": time.monotonic()}
+
+        def cb(accrued, live):
+            now = time.monotonic()
+            if now - state["beat"] >= self.config.heartbeat_seconds:
+                state["beat"] = now
+                self.log.info("still watching %s: %dm live%s", slug, accrued // 60,
+                              "" if live else " (currently offline)")
+                # Safe mid-watch: neither navigates the player away.
+                self._refresh_session(stop_event)
+                self._log_progress()
+
+        return cb
 
     # --- queue construction ---
     def _build_queue(self) -> list[_Item]:
@@ -117,11 +224,25 @@ class Scheduler:
                 self.log.warning("auto_campaigns failed: %s", e)
         return items
 
+    def _cached_campaigns(self) -> list:
+        """fetch_campaigns with a short TTL cache so repeated all-offline cycles
+        don't re-enumerate the campaign API every minute."""
+        now = time.monotonic()
+        if (self._campaigns_cache is not None
+                and now - self._campaigns_at < _CAMPAIGNS_TTL):
+            return self._campaigns_cache
+        camps = self.kick.fetch_campaigns(self.bearer) if self.kick else []
+        self._campaigns_cache = camps
+        self._campaigns_at = now
+        return camps
+
     def _campaign_items(self) -> list[_Item]:
         """Enqueue one live channel per active campaign (with siblings for
         offline-fallback). Best-effort; returns [] on any failure."""
         out: list[_Item] = []
-        campaigns = self.kick.fetch_campaigns(self.bearer) if self.kick else []
+        # Bounded rotation slice so one 24/7 streamer can't pin the whole queue.
+        slice_min = self.config.campaign_minutes or self.config.default_minutes
+        campaigns = self._cached_campaigns()
         for camp in campaigns or []:
             status = str(camp.get("status", "")).lower()
             if status and status not in ("active", "live", "running"):
@@ -143,7 +264,7 @@ class Scheduler:
             if not picked:
                 continue
             out.append(_Item(
-                channel=Channel(url=picked, minutes=0, category_id=cat_id),
+                channel=Channel(url=picked, minutes=slice_min, category_id=cat_id),
                 category_id=cat_id,
                 campaign_channels=siblings,
             ))
@@ -158,9 +279,9 @@ class Scheduler:
 
     # --- per-item processing ---
     def _process_item(self, item: _Item, stop_event) -> None:
-        cfg = self.config
         ch = item.channel
         try:
+            self.browser.maybe_recycle(self.config.driver_recycle_hours * 3600)
             self.browser.ensure_alive()
         except Exception as e:
             self.log.warning("ensure_alive failed before %s: %s", ch.url, e)
@@ -173,7 +294,7 @@ class Scheduler:
             "indefinitely" if target_seconds <= 0 else f"{ch.minutes}m",
         )
 
-        result = self._watch(ch.url, target_seconds, item.category_id, stop_event)
+        result = self._watch(ch.url, target_seconds, item.category_id, stop_event, slug)
         if result is None:
             return
 
@@ -181,6 +302,7 @@ class Scheduler:
         self.log.info(
             "%s -> %s (%ds watched)", slug, reason, result.watched_seconds
         )
+        self._note_result(ch.url, result, slug)
 
         if reason == watcher.STOPPED:
             return
@@ -188,7 +310,21 @@ class Scheduler:
             self._handle_offline(item, stop_event)
         # COMPLETED / WRONG_CATEGORY / ERROR -> advance (caller loops on)
 
-    def _watch(self, url, target_seconds, category_id, stop_event):
+    def _note_result(self, url, result, slug) -> None:
+        """Mark the cycle productive if any time was watched, and escalate a
+        channel that keeps erroring (so a permanently-broken URL is visible)."""
+        if result.watched_seconds > 0 or result.reason == watcher.COMPLETED:
+            self._cycle_productive = True
+        if result.reason == watcher.ERROR:
+            n = self._error_counts.get(url, 0) + 1
+            self._error_counts[url] = n
+            if n >= 3:
+                self.log.warning(
+                    "%s has errored %d times in a row; check the URL/auth", slug, n)
+        else:
+            self._error_counts.pop(url, None)
+
+    def _watch(self, url, target_seconds, category_id, stop_event, slug=None):
         """Call watch_channel, converting any unexpected raise into None."""
         try:
             return watch_channel(
@@ -201,6 +337,7 @@ class Scheduler:
                 offline_grace_checks=self.config.offline_grace_checks,
                 force_160p=self.config.force_160p,
                 mute=self.config.mute,
+                on_tick=self._make_on_tick(slug or url, stop_event),
                 log=self.log,
             )
         except Exception as e:
@@ -241,12 +378,13 @@ class Scheduler:
             slug = channel_slug_from_url(alt) or alt
             self.log.info("offline fallback -> %s", slug)
             target_seconds = max(0, int(item.channel.minutes) * 60)
-            result = self._watch(alt, target_seconds, item.category_id, stop_event)
+            result = self._watch(alt, target_seconds, item.category_id, stop_event, slug)
             if result is None:
                 return
             self.log.info(
                 "%s -> %s (%ds watched)", slug, result.reason, result.watched_seconds
             )
+            self._note_result(alt, result, slug)
             if result.reason in (watcher.STOPPED, watcher.COMPLETED):
                 return
             # else (OFFLINE/ERROR/WRONG_CATEGORY) try the next alternative
@@ -273,9 +411,15 @@ class _EitherEvent:
         return self._a.is_set() or self._b.is_set()
 
     def wait(self, timeout=None) -> bool:
-        # watcher uses .is_set(); provide .wait() for completeness.
-        if self.is_set():
-            return True
-        if timeout:
-            time.sleep(min(timeout, 0.5))
+        # Honor the FULL timeout (the watcher relies on this for its ~1s loop
+        # cadence) while still waking promptly when either event is set.
+        end = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            if end is not None:
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._a.wait(min(0.2, remaining))
+            else:
+                self._a.wait(0.2)
         return self.is_set()
