@@ -2,6 +2,7 @@
 # regardless of the contributor's OS / core.autocrlf setting.
 *.sh        text eol=lf
 Dockerfile  text eol=lf
+Dockerfile.* text eol=lf
 *.yml       text eol=lf
 *.yaml      text eol=lf
 

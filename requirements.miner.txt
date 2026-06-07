@@ -1,0 +1,6 @@
+# Headless miner deps only — NO GUI (no customtkinter / Pillow / tkinter).
+# Selenium drives Chromium; undetected-chromedriver bypasses Kick's Cloudflare.
+selenium
+undetected-chromedriver
+setuptools
+packaging

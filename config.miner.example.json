@@ -1,0 +1,14 @@
+{
+  "channels": [
+    { "url": "https://kick.com/some-streamer", "minutes": 120, "category_id": null },
+    { "url": "https://kick.com/another-streamer", "minutes": 60 },
+    "https://kick.com/bare-url-uses-default-minutes"
+  ],
+  "headless": false,
+  "force_160p": true,
+  "mute": true,
+  "offline_grace_checks": 2,
+  "loop_forever": true,
+  "poll_offline_seconds": 60,
+  "auto_campaigns": false
+}
