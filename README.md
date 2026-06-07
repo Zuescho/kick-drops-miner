@@ -1,121 +1,227 @@
 <p align="center">
-  <img src="https://kick.com/img/kick-logo.svg" alt="Kick Drop Miner Logo" width="180" />
+  <img src="assets/logo.png" width="96" alt="kick-drops-miner logo">
 </p>
 
-# Kick Drop Miner
-
-> 🐳 **Running on a server / Unraid?** This fork adds a Docker build that serves the GUI
-> over your browser (noVNC, port 5800). See **[README.docker.md](README.docker.md)** and the
-> Unraid template in [`unraid/`](unraid/). The image is built automatically by GitHub Actions
-> and published to GHCR.
-
-Kick Drop Miner automates watching Kick.com streams so you can keep drop timers moving without babysitting the site. The desktop app ships with a CustomTkinter UI, Selenium + undetected-chromedriver under the hood, persistent local storage, and smart handling for live/offline transitions.
-
-## Highlights
-
-- **Queue automation** - stack as many live URLs as you want, give each a minute target, and let the queue skip finished entries or re-queue offline ones automatically.
-- **Drop campaign browser** - fetch the current Kick drop campaigns, preview the participating channels, and add any channel (or all of them) to your queue in one click.
-- **Cookie workflow** - open a Chrome window to log in manually or import cookies directly from Chrome/Edge/Firefox via `browser_cookie3`; cookies are saved per domain under `./cookies/`.
-- **Playback controls** - toggle mute, hide the `<video>` element, pop out the always-on-top mini player, or keep the normal Chrome window visible.
-- **Profiles that persist** - `config.json` keeps your items, preferences, and paths, while `chrome_data/` stores a reusable Chrome profile and `cookies/` stores auth state.
-- **Multi-language UI** - French, English, and Turkish translations are built in; the selected language and the light/dark theme are remembered.
-
-## Screenshot
+<h1 align="center">kick-drops-miner</h1>
 
 <p align="center">
-  <img src="https://i.postimg.cc/zXtswf4K/image.png" alt="Main window" width="600" />
-</p>
-<p align="center">
-  <img src="https://i.postimg.cc/kX4Z5mDr/image.png" alt="Main window" width="600" />
+  A robust, <b>headless</b> Kick.com drops miner for Docker / Unraid.<br>
+  No GUI, no noVNC — a long-lived process that logs to stdout.
 </p>
 
-## Requirements
+---
 
-- Windows 10/11 (Linux/macOS can work but are not the main target)
-- Python 3.10+ (tested on 3.10)
-- Google Chrome installed
-- Internet connection so `webdriver-manager` can download a matching ChromeDriver
+`kick-drops-miner` watches the Kick channels you configure for their target
+minutes, then rotates to the next, looping forever:
 
-### Optional extras
+> read config → log in with saved cookies → watch each channel for its target
+> minutes → rotate to the next → repeat.
 
-- `browser_cookie3` - enables the automatic cookie import flow
-- `undetected-chromedriver` is already required; keep Chrome updated so the bundled driver version stays compatible
-- A `.crx` extension or unpacked folder if you want to load a specific Chrome extension while mining
+It drives **one** long-lived Chromium (via `undetected-chromedriver`, which gets
+past Kick's Cloudflare) for both the Kick API calls and the actual watching. It
+accounts for **real playing time** (not wall-clock), auto-recovers a dead or
+crashed browser, re-authenticates itself over multi-day runs, and shuts down
+cleanly on `SIGTERM`.
 
-## Quick start
+> This started as a fork of [HyperBeats/KickDropsMiner](https://github.com/HyperBeats/KickDropsMiner)
+> (a CustomTkinter GUI app) but has diverged into a standalone, headless,
+> container-first rewrite — the GUI is gone; only the `miner/` engine remains.
 
-1. Create and activate a virtual environment (recommended)
-   ```powershell
-   py -3.10 -m venv .venv
-   .\.venv\Scripts\activate
-   ```
-2. Install dependencies
-   ```powershell
-   pip install customtkinter pillow selenium webdriver-manager undetected-chromedriver
-   pip install setuptools # required for users with python version 3.10+ due to distutils being deprecated.
-   pip install browser_cookie3  # optional but handy
-   ```
-3. Launch
-   ```powershell
-   python main.py
-   ```
-   On Windows you can also double-click `run.bat`.
+---
 
-## Signing in & cookies
+## Quick start (Docker)
 
-- Click **Sign in (cookies)** to launch a Chrome window that points to the selected domain (for example `kick.com`). Log in, then press **OK** inside the app to persist the cookies to `cookies/<domain>.json`.
-- If `browser_cookie3` is installed, the app can pull cookies straight from Chrome/Edge/Firefox without opening a window. This avoids extra 2FA prompts or 429 errors and is the fastest way to refresh auth.
-- Cookies are stored per domain and are automatically applied before a worker navigates to a stream or before the drop campaign scraper hits `kick.com`.
+```bash
+docker run -d \
+  --name kick-drops-miner \
+  --shm-size=1g \
+  -v /path/to/config:/config \
+  -e KDM_CHANNELS="https://kick.com/some-streamer=120, https://kick.com/another=60" \
+  -e TZ=Europe/Berlin \
+  ghcr.io/zuescho/kick-drops-miner:latest
 
-## Adding streams
+docker logs -f kick-drops-miner
+```
 
-1. Press **Add link**, paste a Kick live URL (`https://kick.com/<channel>`), and enter the desired minutes (use `0` for infinite watch time).
-2. The entry appears in the table with its target, current elapsed time, and state badge.
-3. Use **Remove** to delete an entry. Removing an entry also stops its worker if it was running.
-4. Finished entries are kept in `config.json`; you can reset them by removing the `finished` flag or by adding the URL again with a new target.
+Or with compose (`docker-compose.yml` is included):
 
-## Running the queue
+```bash
+docker compose up -d && docker compose logs -f
+```
 
-- **Start queue** begins processing top-to-bottom. Offline channels are tagged `Retry` and revisited later to avoid wasting time.
-- The timer only increments while the channel is truly live. If Kick reports the stream as offline mid-watch, the worker pauses and automatically resumes once it comes back online.
-- Status tags show `LIVE`, `PAUSED`, `FINISHED`, or `STOP`. You can stop any selected entry with **Stop selected**.
+> `--shm-size=1g` keeps Chromium from crashing on the default 64 MB `/dev/shm`.
 
-## Drop campaign helper
+You **must** seed a logged-in cookie file before drops will be credited — see
+[Seeding cookies](#seeding-cookies). To build locally instead of pulling:
+`docker build -t kick-drops-miner .`
 
-- Click **Drops campaigns** to fetch active campaigns from `https://web.kick.com/api/v1/drops/campaigns`. The app spins up a tiny hidden Chrome session so it can pass Cloudflare and reuse your stored cookies.
-- Browse each campaign, review the rewards, and view the participating channels (with avatars if Kick provides them).
-- Use **Add this channel** to push a single entry into your queue or **Add all channels** to target every eligible channel of that campaign. The helper reuses the minutes selector so you can decide how long you want to farm.
-- Because the fetch happens inside Chrome, the helper inherits any authenticated state you stored for `kick.com`, so you stay rate-limit friendly.
+---
 
-## Playback & visibility
+## Configuration
 
-- **Mute** enforces muted audio (re-applied periodically so Kick cannot unmute the tab).
-- **Hide player** removes the `<video>` element while keeping playback going. With hide enabled, Chrome runs in a headless-like invisible window for the worker.
-- **Mini player** spawns a small always-on-top overlay plus a reduced Chrome window. Hide player takes precedence over the mini player, so leave Hide off if you want the overlay.
-- If you load an extension (`Chrome extension...` button), Chrome has to stay visible because Google disallows extensions in headless mode. The app detects this and adjusts visibility rules automatically.
+Config is `{KDM_DATA_DIR}/config.json` (i.e. `/config/config.json` in Docker),
+**overlaid with environment variables**. On first run an example is copied from
+`config.example.json`. If `config.json` is missing, channels are read from the
+`KDM_CHANNELS` env var instead. Loading **never crashes** — bad values are logged
+and defaults used.
 
-## Data & persistence
+### `config.json` schema
 
-- `config.json`
-  - `items`: queue entries `{ url, minutes, finished, elapsed }`
-  - `chromedriver_path`: optional manual override
-  - `extension_path`: `.crx` file or unpacked extension directory
-  - `mute`, `hide_player`, `mini_player`, `dark_mode`, `language`
-- `cookies/`: JSON exports per domain (for example `cookies/kick.com.json`)
-- `chrome_data/`: dedicated Chrome user data directory reused by Selenium
-- `chromedriver-win64/`: downloaded drivers kept for offline reuse
+```json
+{
+  "channels": [
+    { "url": "https://kick.com/some-streamer", "minutes": 120, "category_id": null },
+    { "url": "https://kick.com/another-streamer", "minutes": 60 },
+    "https://kick.com/bare-url-uses-default-minutes"
+  ],
+  "headless": false,
+  "force_160p": true,
+  "mute": true,
+  "offline_grace_checks": 4,
+  "loop_forever": true,
+  "poll_offline_seconds": 60,
+  "auto_campaigns": false,
+  "campaign_minutes": 0,
+  "driver_recycle_hours": 6,
+  "heartbeat_seconds": 300,
+  "progress_log": true
+}
+```
 
-## Troubleshooting
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `channels` | list | `[]` | Channels to watch. Each is `{url, minutes, category_id?}` or a bare URL string. `minutes: 0` = watch indefinitely. |
+| `headless` | bool | `false` | `false` = headful Chrome under Xvfb (most robust vs. Cloudflare; recommended). |
+| `force_160p` | bool | `true` | Force lowest stream quality (160p) to save bandwidth/CPU. |
+| `mute` | bool | `true` | Keep the `<video>` muted. |
+| `offline_grace_checks` | int | `4` | Consecutive offline checks before a channel is abandoned (~1 min grace, so a BRB blip isn't dropped). |
+| `loop_forever` | bool | `true` | After the queue drains, start over. |
+| `poll_offline_seconds` | int | `60` | When a channel is offline and no live alternative exists, wait this long (idle cycles back off exponentially). |
+| `auto_campaigns` | bool | `false` | Also enqueue a live channel from each active drop campaign. |
+| `campaign_minutes` | int | `0` | Rotation slice for auto-campaign channels (`0` = use `KDM_DEFAULT_MINUTES`) so one 24/7 streamer can't pin the queue. |
+| `driver_recycle_hours` | num | `6` | Proactively recycle Chrome past this age to cap renderer-memory growth over long runs. |
+| `heartbeat_seconds` | int | `300` | Log a `still watching …` line (and refresh session/progress) on this cadence during a long watch. |
+| `progress_log` | bool | `true` | Periodically log drops progress so you can confirm drops are actually crediting. |
 
-- **Chrome fails to launch** - make sure Chrome is installed and up to date. If you use a portable build or want a pinned driver, select it via **Chromedriver...**.
-- **Timer does not move** - confirm that you are signed in and that the channel is really live. The timer intentionally pauses whenever Kick marks the channel offline.
-- **429 / Too many requests** - favor the browser cookie import flow so you hit fewer login pages. If you must log in manually, wait 10-20 minutes between attempts and keep `chrome_data/` so Kick sees the same profile.
-- **Mini player too small** - disable Mini player or Hide player to restore the normal Chrome window.
-- **Need to re-watch a finished link** - edit `config.json` and remove the `finished` flag, or add the URL again.
+A bare-string channel entry uses `KDM_DEFAULT_MINUTES` (default `120`).
 
-## Tips & housekeeping
+### Environment variables
 
-- Queue entries, preferences, and translations persist between launches, so you can close the app mid-run and resume later.
-- The language selector and dark/light theme toggles are inside the UI footer; they sync to `config.json` instantly.
-- Use the drops helper regularly to keep up with new campaigns and quickly repopulate your queue.
-- When done, close the app and delete the folder to remove `config.json`, `cookies/`, and `chrome_data/`.
+| Env var | Effect |
+|---|---|
+| `KDM_CHANNELS` | Channels when no `config.json`: comma- **or** newline-separated `url` or `url=minutes`. |
+| `KDM_DATA_DIR` | Data dir holding `config.json`, `cookies/`, `chrome_data/`. Docker default `/config`. |
+| `KDM_HEADLESS` | Truthy → true-headless Chrome (no Xvfb). Default headful under Xvfb. Overrides `headless`. |
+| `KDM_DEFAULT_MINUTES` | Minutes for channels with no explicit minutes. Default `120`. |
+| `KDM_LOG_LEVEL` | `DEBUG` / `INFO` / `WARNING` / `ERROR`. Default `INFO`. |
+| `KDM_QUIET_LIBS` | `0` to stop suppressing noisy urllib3/selenium retry logs (default: suppressed). |
+| `KDM_CHROMEDRIVER_PATH` | Path to chromedriver. Set by the image to `/usr/local/bin/chromedriver`. |
+| `KDM_CONTAINER` | Truthy → container Chrome flags (GPU disable, etc.). Set to `1` by the image. |
+| `KDM_LOOP_FOREVER` / `KDM_AUTO_CAMPAIGNS` | Override the matching JSON keys. |
+| `KDM_FORCE_160P` / `KDM_MUTE` | Override `force_160p` / `mute`. |
+| `KDM_POLL_OFFLINE_SECONDS` / `KDM_OFFLINE_GRACE_CHECKS` | Override the matching JSON keys. |
+| `TZ` | Timezone for log timestamps (default UTC). |
+
+Env wins over JSON for the toggles listed as "override" above.
+
+---
+
+## Seeding cookies
+
+The miner authenticates entirely from saved cookies — it does **not** log in
+interactively. It needs a Kick cookie file at:
+
+```
+{KDM_DATA_DIR}/cookies/kick.com.json   (e.g. /config/cookies/kick.com.json)
+```
+
+The file is a **JSON array** of cookie objects (Selenium `get_cookies()` format)
+and **must include a logged-in `session_token` cookie** — that value also becomes
+the `Authorization: Bearer` token for the drops endpoints. Example shape:
+
+```json
+[
+  { "name": "session_token", "value": "<your session token>", "domain": ".kick.com", "path": "/" },
+  { "name": "kick_session", "value": "...", "domain": ".kick.com", "path": "/" }
+]
+```
+
+How to obtain it: log into kick.com in your browser, then export your kick.com
+cookies with a cookie-export extension (e.g. **Cookie-Editor → Export → JSON**),
+make sure `session_token` is present, and save the JSON array as `kick.com.json`
+under `/config/cookies/`.
+
+If no cookies are present the miner still runs but watches anonymously and drops
+won't be credited (a warning is logged). The miner refreshes and re-saves cookies
+from the live browser every 30 min, so a rotated `session_token` keeps working
+and survives restarts.
+
+---
+
+## Running under Unraid
+
+A template is provided at [`unraid/kick-drops-miner.xml`](unraid/kick-drops-miner.xml).
+
+- **Repository:** `ghcr.io/zuescho/kick-drops-miner:latest`
+- Map **`/config`** → e.g. `/mnt/user/appdata/kick-drops-miner/config`
+  (holds `config.json`, `cookies/`, `chrome_data/`).
+- Set **`KDM_CHANNELS`** (or place a `config.json` in the mapped dir).
+- Add extra parameter **`--shm-size=1g`**.
+- Drop your `kick.com.json` into `<appdata>/config/cookies/`.
+- There is **no web UI** — monitor via the container log.
+
+---
+
+## How it works / robustness
+
+One process, one long-lived Chromium, reused for everything. Designed to run
+unattended for multi-day campaigns:
+
+- **Credit-accurate watch time** — accrues only while the `<video>` is actually
+  playing (`currentTime` advancing) *and* the channel is confirmed live within
+  the last 90s. A stalled/blocked player or an API blackout pauses the clock
+  instead of banking fake "watched" minutes.
+- **No silent hangs** — every page load / in-page fetch is time-bounded; a stuck
+  navigation is aborted, and a dead *or* crashed-renderer tab is detected and the
+  browser recreated.
+- **Player watchdog** — if playback stalls, the player is re-played and, past a
+  grace window, the channel is reloaded (160p + visibility re-applied); after
+  repeated failures it rotates on.
+- **Session self-heal** — cookies/bearer are re-read from the live browser and
+  persisted, so auth survives token rotation and restarts.
+- **Rate-limit aware** — a `429/403/Cloudflare` response is distinguished from a
+  real "offline" answer; polling backs off instead of hammering.
+- **Memory-capped** — the driver is proactively recycled (default every 6h),
+  including by slicing long/indefinite watches, to bound renderer growth.
+- **Clean shutdown** — `SIGTERM` stops promptly and quits Chromium once.
+
+`progress_log` periodically prints drops progress (e.g.
+`drops progress: Rust Drops -> 45/120 min (in progress)`) so you can confirm
+drops are actually crediting.
+
+> **Headless note:** the default is *headful Chrome under Xvfb* because some drop
+> systems gate crediting on the page being visible/focused. `KDM_HEADLESS=1`
+> forces true headless and is best-effort (a visibility spoof is injected) but
+> not guaranteed to credit — prefer the default.
+
+---
+
+## Local run (no Docker)
+
+```bash
+pip install -r requirements.txt
+# Chrome/Chromium + a matching chromedriver must be installed; or set KDM_CHROMEDRIVER_PATH.
+export KDM_CHANNELS="https://kick.com/some-streamer=120"
+export KDM_DATA_DIR=.
+python runminer.py
+```
+
+Cookies go in `./cookies/kick.com.json`. Press Ctrl-C for a clean shutdown.
+
+---
+
+## Credits
+
+Forked from [HyperBeats/KickDropsMiner](https://github.com/HyperBeats/KickDropsMiner);
+the headless engine and container tooling are a rewrite. Original licensing from
+the upstream project is retained.

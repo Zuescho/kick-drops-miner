@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>kick-drops-miner</Name>
+  <Repository>ghcr.io/zuescho/kick-drops-miner:latest</Repository>
+  <Registry>https://ghcr.io/zuescho/kick-drops-miner</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Zuescho/kick-drops-miner/issues</Support>
+  <Project>https://github.com/Zuescho/kick-drops-miner</Project>
+  <Overview>
+    Headless Kick.com drops miner. Watches configured Kick channels for their
+    target minutes, then rotates to the next — no GUI, logs to the Docker log.
+    Seed /config/cookies/kick.com.json with a logged-in session_token, and set
+    channels via the KDM_CHANNELS variable or a /config/config.json file.
+  </Overview>
+  <Category>Tools: Other:</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/Zuescho/kick-drops-miner/main/assets/logo.png</Icon>
+  <ExtraParams>--shm-size=1g</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>
+    Headless Kick.com drops miner (no noVNC/GUI). One long-lived Chromium,
+    real watch-time accounting, auto-recovery, clean shutdown. Logs to stdout.
+  </Description>
+  <Config Name="Config dir" Target="/config" Default="/mnt/user/appdata/kick-drops-miner/config" Mode="rw" Description="Holds config.json, cookies/ and chrome_data/. Seed cookies/kick.com.json with a logged-in session_token." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/kick-drops-miner/config</Config>
+  <Config Name="KDM_CHANNELS" Target="KDM_CHANNELS" Default="" Mode="" Description="Channels to watch: comma- or newline-separated 'url' or 'url=minutes', e.g. https://kick.com/a=120, https://kick.com/b. Optional if you provide /config/config.json." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="TZ" Target="TZ" Default="Europe/Berlin" Mode="" Description="Timezone for log timestamps." Type="Variable" Display="always" Required="false" Mask="false">Europe/Berlin</Config>
+  <Config Name="KDM_HEADLESS" Target="KDM_HEADLESS" Default="0" Mode="" Description="0 = headful Chrome under Xvfb (most robust vs. Cloudflare, recommended). 1 = true headless." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config Name="KDM_LOG_LEVEL" Target="KDM_LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG / INFO / WARNING / ERROR." Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
+</Container>

@@ -1,5 +1,0 @@
-"""UI module for KickDropsMiner"""
-from .app import App
-
-__all__ = ['App']
-

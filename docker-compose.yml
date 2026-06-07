@@ -1,22 +1,17 @@
 services:
-  kickdropsminer:
-    build: .
-    image: kickdropsminer:local
-    container_name: kickdropsminer
-    ports:
-      - "5800:5800"   # noVNC web UI -> http://<host>:5800
-      # - "5900:5900" # raw VNC (optional)
+  kick-drops-miner:
+    # Use the published image, or `build: .` to build locally.
+    image: ghcr.io/zuescho/kick-drops-miner:latest
+    # build: .
+    container_name: kick-drops-miner
     volumes:
-      - ./config:/config
+      - ./config:/config          # holds config.json, cookies/, chrome_data/
     environment:
-      - USER_ID=1000        # uid that owns ./config on the host
-      - GROUP_ID=1000
       - TZ=Europe/Berlin
-      # - DISPLAY_WIDTH=1600
-      # - DISPLAY_HEIGHT=900
-      # - DARK_MODE=1
-      # To password-protect / TLS the web UI, see the jlesage baseimage-gui env
-      # docs: https://github.com/jlesage/docker-baseimage-gui#environment-variables
+      # Channels can come from config.json OR this env (url or url=minutes):
+      # - KDM_CHANNELS=https://kick.com/some-streamer=120, https://kick.com/another=60
+      # - KDM_HEADLESS=0          # 0 = headful under Xvfb (most robust). 1 = true headless.
+      # - KDM_LOG_LEVEL=INFO
     # Chromium needs a reasonable amount of shared memory.
     shm_size: "1gb"
     restart: unless-stopped

@@ -1,8 +1,8 @@
-customtkinter
-pillow
-selenium
-undetected-chromedriver
-webdriver-manager
-browser_cookie3
+# Headless miner deps only — NO GUI (no customtkinter / Pillow / tkinter).
+# Selenium drives Chromium; undetected-chromedriver bypasses Kick's Cloudflare.
+# Pinned: undetected-chromedriver is fragile across releases, so freeze the
+# last known-good version instead of tracking latest on every image rebuild.
+selenium>=4.15,<5
+undetected-chromedriver==3.5.5
 setuptools
 packaging
