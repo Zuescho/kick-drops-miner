@@ -106,10 +106,10 @@ def _detect_chrome():
         if major:
             return major, executable
 
-    for path in ([executable] if executable else []):
-        major = _chrome_version_from_executable(path)
+    if executable:
+        major = _chrome_version_from_executable(executable)
         if major:
-            return major, path
+            return major, executable
 
     return None, executable
 
@@ -198,10 +198,7 @@ class Browser:
 
         opts = uc.ChromeOptions()
         if self._headless:
-            try:
-                opts.add_argument("--headless=new")
-            except Exception:
-                opts.add_argument("--headless")
+            opts.add_argument("--headless=new")
             opts.add_argument("--disable-gpu")
         else:
             opts.add_argument("--window-size=1280,800")
@@ -268,9 +265,15 @@ class Browser:
     def ensure_alive(self):
         """If the driver is dead/unreachable/crashed, quit() and recreate it,
         then re-navigate to kick.com. Callers may invoke before important
-        operations."""
+        operations. Never raises: a failed (re)build is logged and leaves the
+        driver unset so the next call retries — callers degrade (no-op / None),
+        they don't see the build exception."""
         if self._driver is None:
-            self.start()
+            try:
+                self.start()
+            except Exception as exc:
+                if self._log:
+                    self._log.warning("Driver start failed (%s); will retry.", exc)
             return
         try:
             # Probe — touching these raises if the session is gone, and the
@@ -293,7 +296,11 @@ class Browser:
         except Exception as exc:
             if self._log:
                 self._log.warning("Driver unreachable (%s); recreating.", exc)
-        self._recreate()
+        try:
+            self._recreate()
+        except Exception as exc:
+            if self._log:
+                self._log.warning("Driver recreate failed (%s); will retry.", exc)
 
     def _recreate(self):
         """Tear down and rebuild the driver, landing back on kick.com."""
@@ -346,8 +353,8 @@ class Browser:
 
     @property
     def last_blocked(self):
-        """True if the most recent fetch_json hit a 429/403/503 or a Cloudflare
-        challenge (vs. a genuine answer). Callers use this to back off."""
+        """True if the most recent fetch_json hit a 401/403/429/503 or a
+        Cloudflare challenge (vs. a genuine answer). Callers use this to back off."""
         return self._last_blocked
 
     def fetch_json(self, url, *, bearer=None, timeout=12.0):

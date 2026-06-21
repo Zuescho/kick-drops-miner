@@ -73,10 +73,9 @@ def session_bearer(cookies: list[dict]) -> str | None:
     kick.com-domain cookie if several share the name."""
     fallback = None
     for c in cookies or []:
-        try:
-            if c.get("name") != "session_token":
-                continue
-        except AttributeError:
+        if not isinstance(c, dict):
+            continue
+        if c.get("name") != "session_token":
             continue
         val = c.get("value")
         if not val:

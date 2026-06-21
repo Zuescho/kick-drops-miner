@@ -17,6 +17,7 @@ Long-run hardening:
 import random
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 # reasons
@@ -74,7 +75,6 @@ try {
 def _path_slug(url):
     """First path segment of a URL ('https://kick.com/foo?x' -> 'foo')."""
     try:
-        from urllib.parse import urlparse
         return (urlparse(url).path or "").strip("/").split("/")[0] or None
     except Exception:
         return None
@@ -102,7 +102,7 @@ def watch_channel(browser, kick, channel_url, *, target_seconds, stop_event,
                   force_160p=True, mute=True, on_tick=None, log=None):
     """Navigate ``browser`` to channel_url and accrue REAL playing time while the
     channel is live, confirmed live within 90s, AND the video is progressing.
-    Polls live/category every ~10-15s (jittered, backing off when blocked);
+    Polls live/category every ~10-15s (jittered, backing off on unknown status);
     after ``offline_grace_checks`` consecutive offline checks returns OFFLINE; on
     a definite category mismatch returns WRONG_CATEGORY; after too many failed
     player recoveries returns OFFLINE. Returns COMPLETED at target_seconds
@@ -146,7 +146,6 @@ def watch_channel(browser, kick, channel_url, *, target_seconds, stop_event,
             # --- periodic live / category poll ---
             if now >= next_poll:
                 status = kick.is_live(channel_url)
-                blocked = bool(getattr(browser, "last_blocked", False))
                 if status is True:
                     offline_streak = 0
                     live = True
@@ -156,7 +155,9 @@ def watch_channel(browser, kick, channel_url, *, target_seconds, stop_event,
                     offline_streak += 1
                     live = False
                     poll_interval = random.uniform(_POLL_MIN, _POLL_MAX)
-                elif blocked:
+                else:
+                    # Unknown (network / parse / rate-limit): never an offline
+                    # strike; back off polling to ease pressure during a blackout.
                     poll_interval = min(poll_interval * 1.7, _POLL_BACKOFF_MAX)
 
                 # Stop the clock the moment we believe we're offline.
@@ -207,6 +208,8 @@ def watch_channel(browser, kick, channel_url, *, target_seconds, stop_event,
                                 log.warning("Channel %s player unrecoverable after %d "
                                             "reloads; rotating.", slug, reloads)
                             return _result(OFFLINE)
+                    elif playing:
+                        reloads = 0   # player healthy again; reset failed-recovery count
                 else:
                     playing = False
 
@@ -254,9 +257,9 @@ def _tend_player(browser, channel_url, slug, mute, force_160p,
     except Exception:
         cur = ""
     cur_slug = _path_slug(cur)
-    if slug and cur_slug and cur_slug != slug:
+    if slug and cur and cur_slug != slug:
         if log:
-            log.info("player drifted to %s; re-navigating to %s.", cur_slug, slug)
+            log.info("player drifted to %s; re-navigating to %s.", cur_slug or cur, slug)
         _navigate(browser, channel_url, force_160p, mute, log)
         return None, now, False, True
 

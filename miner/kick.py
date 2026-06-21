@@ -10,19 +10,20 @@ from urllib.parse import urlparse
 def channel_slug_from_url(url):
     """'https://kick.com/foo' -> 'foo'; non-kick or invalid -> None.
     Also accepts a bare slug 'foo' -> 'foo'."""
-    if not url or not isinstance(url, str):
+    if not isinstance(url, str):
         return None
     s = url.strip()
     if not s:
         return None
-    if "://" not in s and "/" not in s and "." not in s:
-        # Bare slug.
-        return s or None
+    # No scheme and no dot => a bare slug (optionally with a trailing path).
+    if "://" not in s and "." not in s:
+        return s.strip("/").split("/")[0] or None
     try:
         p = urlparse(s if "://" in s else "https://" + s)
     except Exception:
         return None
-    if "kick.com" not in (p.netloc or ""):
+    host = (p.hostname or "").lower()
+    if host != "kick.com" and not host.endswith(".kick.com"):
         return None
     slug = (p.path or "").strip("/").split("/")[0]
     return slug or None
@@ -71,7 +72,7 @@ class KickClient:
         if data is None:
             return None
         livestream = data.get("livestream")
-        return bool(livestream and livestream.get("is_live"))
+        return bool(isinstance(livestream, dict) and livestream.get("is_live"))
 
     def current_category_id(self, channel):
         """livestream.categories[0].id when live, else None."""
@@ -79,7 +80,7 @@ class KickClient:
         if not isinstance(data, dict):
             return None
         livestream = data.get("livestream")
-        if not (livestream and livestream.get("is_live")):
+        if not (isinstance(livestream, dict) and livestream.get("is_live")):
             return None
         categories = livestream.get("categories") or []
         if categories:
@@ -98,9 +99,11 @@ class KickClient:
         if data is None:
             return None
         livestream = data.get("livestream")
-        if not (livestream and livestream.get("is_live")):
+        if not (isinstance(livestream, dict) and livestream.get("is_live")):
             return None
-        categories = livestream.get("categories") or []
+        categories = livestream.get("categories")
+        if not isinstance(categories, list):
+            return None
         ids = {c.get("id") for c in categories if isinstance(c, dict)}
         if not ids:
             return None
@@ -139,13 +142,15 @@ class KickClient:
                 "category_id": category.get("id"),
                 "channels": [],
             }
-            for channel in campaign.get("channels") or []:
+            channels = campaign.get("channels")
+            for channel in channels if isinstance(channels, list) else []:
                 if not isinstance(channel, dict):
                     continue
                 slug = channel.get("slug")
                 if not slug:
-                    user = channel.get("user") or {}
-                    slug = user.get("username") or user.get("slug")
+                    user = channel.get("user")
+                    if isinstance(user, dict):
+                        slug = user.get("username") or user.get("slug")
                 if slug:
                     info["channels"].append(
                         {"slug": slug, "url": f"https://kick.com/{slug}"}
@@ -175,21 +180,26 @@ class KickClient:
         # Response shapes seen: {"data": {"livestreams": [...]}} or {"data": [...]}.
         data_obj = data.get("data")
         if isinstance(data_obj, dict):
-            streams = data_obj.get("livestreams") or []
+            streams = data_obj.get("livestreams")
         elif isinstance(data_obj, list):
             streams = data_obj
         else:
-            streams = []
+            streams = None
+        if not isinstance(streams, list):
+            return []
 
         urls = []
         for stream in streams[:limit]:
             if not isinstance(stream, dict):
                 continue
-            channel = stream.get("channel") or {}
+            channel = stream.get("channel")
+            if not isinstance(channel, dict):
+                continue
             slug = channel.get("slug")
             if not slug:
-                user = channel.get("user") or {}
-                slug = user.get("username") or user.get("slug")
+                user = channel.get("user")
+                if isinstance(user, dict):
+                    slug = user.get("username") or user.get("slug")
             if slug:
                 urls.append(f"https://kick.com/{slug}")
         return urls

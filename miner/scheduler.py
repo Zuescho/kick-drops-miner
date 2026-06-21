@@ -19,6 +19,7 @@ _CAMPAIGNS_TTL = 300.0      # cache campaigns this long (avoid hammering the API
 _SESSION_TTL = 1800.0       # re-read cookies / bearer every 30 min
 _PROGRESS_TTL = 1800.0      # log drops progress every 30 min
 _BACKOFF_CAP = 600.0        # max idle-cycle sleep
+_MIN_IDLE_SLEEP = 1.0       # floor for idle/offline waits (never hot-loop on poll<=0)
 
 
 @dataclass
@@ -94,12 +95,10 @@ class Scheduler:
 
                 queue = self._build_queue()
                 if not queue:
-                    self.log.warning(
-                        "work queue is empty; sleeping %ds", cfg.poll_offline_seconds
-                    )
-                    self._sleep(cfg.poll_offline_seconds, stop_event)
                     if not cfg.loop_forever:
+                        self.log.warning("work queue is empty; exiting")
                         break
+                    self._idle_backoff(stop_event, "work queue is empty")
                     continue
 
                 self.log.info("queue has %d channel(s)", len(queue))
@@ -114,19 +113,12 @@ class Scheduler:
                 if not cfg.loop_forever:
                     self.log.info("queue drained; loop_forever disabled -> exiting")
                     break
-                # If a whole cycle did no productive watching (everything offline),
-                # back off exponentially instead of re-enumerating every 60s.
-                if not self._cycle_productive:
-                    self._idle_cycles += 1
-                    backoff = min(
-                        cfg.poll_offline_seconds * (2 ** min(self._idle_cycles, 4)),
-                        _BACKOFF_CAP,
-                    )
-                    self.log.info("idle cycle %d; sleeping %ds before rebuild",
-                                  self._idle_cycles, int(backoff))
-                    self._sleep(backoff, stop_event)
-                else:
+                # A whole cycle with no productive watching (everything offline)
+                # backs off exponentially instead of re-enumerating every poll.
+                if self._cycle_productive:
                     self._idle_cycles = 0
+                else:
+                    self._idle_backoff(stop_event, "all channels offline")
         except Exception as e:
             self.log.exception("scheduler crashed: %s", e)
         finally:
@@ -345,11 +337,16 @@ class Scheduler:
 
             if reason == watcher.COMPLETED:
                 if target_seconds <= 0:
-                    continue                            # slice done; recycle + go on
+                    continue                            # indefinite slice done; recycle on
                 remaining -= result.watched_seconds
-                if remaining > 0:
+                if remaining > 0 and result.watched_seconds > 0:
                     continue                            # more to watch; recycle between
-                self.log.info("%s -> completed (%ds watched)", slug, total)
+                if remaining > 0:
+                    # A COMPLETED slice that accrued nothing would loop forever;
+                    # advance so a misreport can't pin the queue on one channel.
+                    self.log.warning("%s -> no progress in slice; advancing", slug)
+                else:
+                    self.log.info("%s -> completed (%ds watched)", slug, total)
                 return
 
             # Non-completed slice ends this item.
@@ -404,7 +401,6 @@ class Scheduler:
     def _handle_offline(self, item: _Item, stop_event) -> None:
         """On OFFLINE: try a live alternative from the same campaign; else
         from the category; else sleep poll_offline_seconds and advance."""
-        cfg = self.config
         alts = [u for u in item.campaign_channels if u != item.channel.url]
 
         # If we have a category but no/empty siblings, ask Kick for live ones.
@@ -439,17 +435,37 @@ class Scheduler:
                 return
             # else (OFFLINE/ERROR/WRONG_CATEGORY) try the next alternative
 
-        self.log.info("no live alternative; sleeping %ds", cfg.poll_offline_seconds)
-        self._sleep(cfg.poll_offline_seconds, stop_event)
+        poll = self._poll_seconds()
+        self.log.info("no live alternative; sleeping %ds", int(poll))
+        self._sleep(poll, stop_event)
 
     # --- utils ---
+    def _poll_seconds(self) -> float:
+        # Floor at _MIN_IDLE_SLEEP so a misconfigured poll_offline_seconds<=0
+        # can never turn an idle/offline wait into a CPU hot-loop.
+        return max(_MIN_IDLE_SLEEP, float(self.config.poll_offline_seconds))
+
+    def _idle_backoff(self, stop_event, reason: str) -> None:
+        """A non-productive cycle (empty queue or everything offline): sleep with
+        exponential backoff capped at _BACKOFF_CAP so we never re-enumerate the
+        API in a tight loop. _idle_cycles resets to 0 on the next productive one."""
+        self._idle_cycles += 1
+        backoff = min(self._poll_seconds() * (2 ** min(self._idle_cycles, 4)),
+                      _BACKOFF_CAP)
+        self.log.info("%s; sleeping %ds (idle cycle %d)",
+                      reason, int(backoff), self._idle_cycles)
+        self._sleep(backoff, stop_event)
+
     def _sleep(self, seconds: float, stop_event) -> None:
-        """Sleep in short slices so a stop is honored within ~0.5s."""
+        """Sleep in short slices so a stop is honored within ~0.5s. Recomputes the
+        remaining time each slice so a lapsed deadline never hands time.sleep a
+        negative duration (which would raise)."""
         end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            if self._stopping(stop_event):
+        while not self._stopping(stop_event):
+            remaining = end - time.monotonic()
+            if remaining <= 0:
                 return
-            time.sleep(min(0.5, end - time.monotonic()))
+            time.sleep(min(0.5, remaining))
 
 
 class _EitherEvent:

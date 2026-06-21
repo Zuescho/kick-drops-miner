@@ -11,6 +11,14 @@ from .log import get_logger
 log = get_logger("miner.config")
 
 
+# Recognized config.json top-level keys (others are ignored with a warning).
+_KNOWN_KEYS = {
+    "channels", "headless", "force_160p", "mute", "offline_grace_checks",
+    "loop_forever", "poll_offline_seconds", "auto_campaigns", "campaign_minutes",
+    "driver_recycle_hours", "heartbeat_seconds", "progress_log", "chromedriver_path",
+}
+
+
 def _truthy(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -47,6 +55,22 @@ def _as_int(value, default: int) -> int:
     except (ValueError, TypeError):
         log.warning("invalid int %r in config.json; using %d", value, default)
         return default
+
+
+def _coerce_minutes(value, default: int) -> int:
+    """Channel watch target in minutes (0 => watch indefinitely). None
+    (unspecified) or a non-int / negative value falls back to ``default``."""
+    if value is None:
+        return default
+    try:
+        minutes = int(value)
+    except (ValueError, TypeError):
+        log.warning("invalid channel minutes %r; using %d", value, default)
+        return default
+    if minutes < 0:
+        log.warning("negative channel minutes %r; using %d", value, default)
+        return default
+    return minutes
 
 
 @dataclass
@@ -97,7 +121,7 @@ class MinerConfig:
         cfg.container = _env_bool("KDM_CONTAINER", cfg.container)
         cfg.chromedriver_path = os.environ.get("KDM_CHROMEDRIVER_PATH")
 
-        default_minutes = _env_int("KDM_DEFAULT_MINUTES", 120)
+        default_minutes = _env_int("KDM_DEFAULT_MINUTES", cfg.default_minutes)
         cfg.default_minutes = default_minutes
 
         # --- JSON file overlay ---
@@ -113,6 +137,12 @@ class MinerConfig:
                     log.warning("config.json is not a JSON object; ignoring")
             except Exception as e:
                 log.warning("failed to read %s: %s; using defaults", cfg_path, e)
+
+        # Warn (don't fail) on unrecognized top-level keys to catch typos.
+        unknown = [k for k in data if k not in _KNOWN_KEYS]
+        if unknown:
+            log.warning("ignoring unknown config.json key(s): %s",
+                        ", ".join(sorted(map(str, unknown))))
 
         # Scalar settings from JSON (env still wins below for a few of these).
         cfg.headless = bool(data.get("headless", cfg.headless))
@@ -184,19 +214,21 @@ class MinerConfig:
                 elif isinstance(entry, dict):
                     url = str(entry.get("url", "")).strip()
                     if not url:
+                        log.warning("skipping channel entry with no url: %r", entry)
                         continue
-                    minutes = entry.get("minutes", default_minutes)
-                    try:
-                        minutes = int(minutes)
-                    except (ValueError, TypeError):
-                        minutes = default_minutes
+                    minutes = _coerce_minutes(entry.get("minutes"), default_minutes)
                     cat = entry.get("category_id")
                     if cat is not None:
                         try:
                             cat = int(cat)
                         except (ValueError, TypeError):
                             cat = None
+                        else:
+                            if cat <= 0:
+                                cat = None
                     out.append(Channel(url=url, minutes=minutes, category_id=cat))
+                else:
+                    log.warning("skipping non-string/non-dict channel entry: %r", entry)
             except Exception as e:
                 log.warning("skipping malformed channel entry %r: %s", entry, e)
         return out
@@ -216,10 +248,7 @@ class MinerConfig:
             if "=" in part:
                 url, _, m = part.partition("=")
                 url = url.strip()
-                try:
-                    minutes = int(m.strip())
-                except (ValueError, TypeError):
-                    minutes = default_minutes
+                minutes = _coerce_minutes(m, default_minutes)
             if url:
                 out.append(Channel(url=url, minutes=minutes))
         return out

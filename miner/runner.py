@@ -29,9 +29,17 @@ def main() -> int:
 
     stop_event = threading.Event()
     scheduler = Scheduler(cfg, log)
+    signals_seen = 0
 
     def _handle_signal(signum, _frame):
-        log.info("received signal %s -> shutting down", signum)
+        nonlocal signals_seen
+        signals_seen += 1
+        if signals_seen >= 2:
+            # Second SIGINT/SIGTERM: operator is impatient. Raise so the run
+            # unwinds at once; run()'s finally still quits Chrome exactly once.
+            log.warning("received signal %s again -> forcing exit", signum)
+            raise KeyboardInterrupt
+        log.info("received signal %s -> shutting down (repeat to force)", signum)
         stop_event.set()
         scheduler.stop()
 
